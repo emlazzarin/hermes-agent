@@ -122,14 +122,14 @@ def test_aiagent_reuses_existing_errors_log_handler():
             patch("run_agent.OpenAI"),
         ):
             AIAgent(
-                api_key="test-k...7890",
+                api_key="***",
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
             )
             AIAgent(
-                api_key="test-k...7890",
+                api_key="***",
                 base_url="https://openrouter.ai/api/v1",
                 quiet_mode=True,
                 skip_context_files=True,
@@ -191,6 +191,47 @@ class TestProviderModelNormalization:
             )
 
         assert agent.model == "anthropic/claude-sonnet-4.6"
+
+
+def test_aiagent_recreates_session_db_row_idempotently_on_first_use():
+    mock_db = MagicMock()
+
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="***",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            session_id="existing-session",
+            platform="telegram",
+            session_db=mock_db,
+        )
+
+    assert agent._session_db is mock_db
+    mock_db.create_session.assert_not_called()
+
+    agent._ensure_db_session()
+
+    mock_db.create_session.assert_called_once_with(
+        session_id="existing-session",
+        source="telegram",
+        model=agent.model,
+        model_config={
+            "max_iterations": agent.max_iterations,
+            "reasoning_config": None,
+            "max_tokens": None,
+        },
+        system_prompt=agent._cached_system_prompt,
+        user_id=None,
+        parent_session_id=None,
+    )
 
 
 # ---------------------------------------------------------------------------

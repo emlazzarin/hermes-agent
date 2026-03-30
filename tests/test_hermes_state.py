@@ -38,6 +38,14 @@ class TestSessionLifecycle:
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
 
+    def test_create_session_is_idempotent_for_existing_session_id(self, db):
+        db.create_session(session_id="s1", source="telegram", model="first-model")
+        db.create_session(session_id="s1", source="telegram", model="second-model")
+
+        session = db.get_session("s1")
+        assert session is not None
+        assert session["model"] == "first-model"
+
     def test_end_session(self, db):
         db.create_session(session_id="s1", source="cli")
         db.end_session("s1", end_reason="user_exit")

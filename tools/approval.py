@@ -8,10 +8,12 @@ This module is the single source of truth for the dangerous command system:
 - Permanent allowlist persistence (config.yaml)
 """
 
+import ast
 import contextvars
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -334,6 +336,142 @@ def _normalize_command_for_detection(command: str) -> str:
     return command
 
 
+def _extract_python_inline_script(command: str) -> Optional[str]:
+    """Return the payload passed to ``python -c`` when present, else ``None``."""
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+
+    exe = os.path.basename(tokens[0]).lower()
+    if exe not in {"python", "python2", "python3"}:
+        return None
+
+    for i, tok in enumerate(tokens):
+        if tok == "-c" and i + 1 < len(tokens):
+            return tokens[i + 1]
+
+    return None
+
+
+def _is_benign_python_time_check(command: str) -> bool:
+    """
+    Allow a very narrow class of read-only ``python -c`` time checks.
+
+    This avoids noisy approval prompts for commands like:
+      python -c "from datetime import datetime; ...; print(...)"
+
+    Anything outside the allowed AST/import/call surface stays dangerous.
+    """
+    script = _extract_python_inline_script(command)
+    if not script:
+        return False
+
+    try:
+        tree = ast.parse(script, mode="exec")
+    except SyntaxError:
+        return False
+
+    allowed_modules = {"datetime", "zoneinfo"}
+    forbidden_names = {
+        "open", "exec", "eval", "compile", "input", "__import__",
+        "globals", "locals", "vars", "breakpoint",
+    }
+    allowed_call_names = {
+        "print", "str", "int", "float", "bool",
+        "datetime", "date", "time", "timedelta", "timezone", "ZoneInfo",
+    }
+    allowed_call_attrs = {
+        "now", "utcnow", "astimezone", "isoformat", "strftime", "fromtimestamp",
+    }
+    allowed_node_types = (
+        ast.Module,
+        ast.Import,
+        ast.ImportFrom,
+        ast.alias,
+        ast.Assign,
+        ast.Expr,
+        ast.Call,
+        ast.Name,
+        ast.Load,
+        ast.Store,
+        ast.Attribute,
+        ast.Constant,
+        ast.Compare,
+        ast.BoolOp,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.IfExp,
+        ast.JoinedStr,
+        ast.FormattedValue,
+        ast.Subscript,
+        ast.Slice,
+        ast.Tuple,
+        ast.List,
+        ast.Dict,
+        ast.keyword,
+        ast.And,
+        ast.Or,
+        ast.Not,
+        ast.Eq,
+        ast.NotEq,
+        ast.Lt,
+        ast.LtE,
+        ast.Gt,
+        ast.GtE,
+        ast.Is,
+        ast.IsNot,
+        ast.In,
+        ast.NotIn,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.Mod,
+        ast.Pow,
+        ast.FloorDiv,
+        ast.USub,
+        ast.UAdd,
+    )
+
+    for node in ast.walk(tree):
+        if not isinstance(node, allowed_node_types):
+            return False
+
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                base = (alias.name or "").split(".", 1)[0]
+                if base not in allowed_modules:
+                    return False
+
+        if isinstance(node, ast.ImportFrom):
+            base = (node.module or "").split(".", 1)[0]
+            if node.level != 0 or base not in allowed_modules:
+                return False
+
+        if isinstance(node, ast.Name) and node.id in forbidden_names:
+            return False
+
+        if isinstance(node, ast.Call):
+            fn = node.func
+            if isinstance(fn, ast.Name):
+                if fn.id in forbidden_names or fn.id not in allowed_call_names:
+                    return False
+            elif isinstance(fn, ast.Attribute):
+                if fn.attr not in allowed_call_attrs:
+                    return False
+            else:
+                return False
+
+    # Ensure it's actually a time-check shape, not arbitrary math/prints.
+    script_l = script.lower()
+    has_time_module = any(m in script_l for m in ("datetime", "zoneinfo"))
+    has_print = "print(" in script_l
+    return has_time_module and has_print
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
@@ -343,6 +481,8 @@ def detect_dangerous_command(command: str) -> tuple:
     command_lower = _normalize_command_for_detection(command).lower()
     for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
         if pattern_re.search(command_lower):
+            if description == "script execution via -e/-c flag" and _is_benign_python_time_check(command):
+                return (False, None, None)
             pattern_key = description
             return (True, pattern_key, description)
     return (False, None, None)

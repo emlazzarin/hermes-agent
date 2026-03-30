@@ -852,3 +852,63 @@ class TestSendVideo:
 
         call_kwargs = connected_adapter._bot.send_video.call_args[1]
         assert call_kwargs["message_thread_id"] == 789
+
+
+# ---------------------------------------------------------------------------
+# TestVoiceAudioCachingMetadata
+# ---------------------------------------------------------------------------
+
+class TestVoiceAudioCachingMetadata:
+    @pytest.mark.asyncio
+    async def test_voice_cache_includes_message_and_file_ids(self, adapter):
+        file_obj = _make_file_obj(b"voice-bytes")
+        voice = MagicMock()
+        voice.get_file = AsyncMock(return_value=file_obj)
+        voice.file_id = "voice-file-id"
+        voice.file_unique_id = "voice-uniq-id"
+
+        msg = _make_message(document=None, caption=None)
+        msg.voice = voice
+        update = _make_update(msg)
+
+        with patch("gateway.platforms.telegram.cache_audio_from_bytes", return_value="/tmp/voice.ogg") as cache_mock:
+            await adapter._handle_media_message(update, MagicMock())
+
+        cache_mock.assert_called_once()
+        kwargs = cache_mock.call_args.kwargs
+        assert kwargs["platform"] == "telegram"
+        assert kwargs["chat_id"] == str(msg.chat.id)
+        assert kwargs["message_id"] == str(msg.message_id)
+        assert kwargs["file_id"] == "voice-file-id"
+        assert kwargs["file_unique_id"] == "voice-uniq-id"
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == ["/tmp/voice.ogg"]
+        assert event.media_types == ["audio/ogg"]
+
+    @pytest.mark.asyncio
+    async def test_audio_cache_includes_message_and_file_ids(self, adapter):
+        file_obj = _make_file_obj(b"audio-bytes")
+        audio = MagicMock()
+        audio.get_file = AsyncMock(return_value=file_obj)
+        audio.file_id = "audio-file-id"
+        audio.file_unique_id = "audio-uniq-id"
+
+        msg = _make_message(document=None, caption=None)
+        msg.audio = audio
+        update = _make_update(msg)
+
+        with patch("gateway.platforms.telegram.cache_audio_from_bytes", return_value="/tmp/audio.mp3") as cache_mock:
+            await adapter._handle_media_message(update, MagicMock())
+
+        cache_mock.assert_called_once()
+        kwargs = cache_mock.call_args.kwargs
+        assert kwargs["platform"] == "telegram"
+        assert kwargs["chat_id"] == str(msg.chat.id)
+        assert kwargs["message_id"] == str(msg.message_id)
+        assert kwargs["file_id"] == "audio-file-id"
+        assert kwargs["file_unique_id"] == "audio-uniq-id"
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == ["/tmp/audio.mp3"]
+        assert event.media_types == ["audio/mp3"]

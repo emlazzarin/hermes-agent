@@ -90,6 +90,28 @@ class TestDetectDangerousSudo:
         assert key is not None
 
 
+class TestPythonInlineScriptHeuristics:
+    def test_python_time_check_not_flagged(self):
+        cmd = (
+            "python -c \"from datetime import datetime; "
+            "from zoneinfo import ZoneInfo; "
+            "n=datetime.now(ZoneInfo('America/Los_Angeles')); "
+            "print(n.isoformat()); "
+            "print('sleep_window='+str(0<=n.hour<9))\""
+        )
+        is_dangerous, key, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_python_c_with_os_system_still_flagged(self):
+        cmd = "python -c \"import os; os.system('echo pwned')\""
+        is_dangerous, key, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is True
+        assert key is not None
+        assert "-c" in desc or "script" in desc.lower()
+
+
 class TestDetectSqlPatterns:
     def test_drop_table(self):
         is_dangerous, _, desc = detect_dangerous_command("DROP TABLE users")

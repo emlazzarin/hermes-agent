@@ -3077,7 +3077,15 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 file_obj = await msg.voice.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
+                cached_path = cache_audio_from_bytes(
+                    bytes(audio_bytes),
+                    ext=".ogg",
+                    platform="telegram",
+                    chat_id=str(msg.chat.id),
+                    message_id=str(msg.message_id),
+                    file_id=getattr(msg.voice, "file_id", None),
+                    file_unique_id=getattr(msg.voice, "file_unique_id", None),
+                )
                 event.media_urls = [cached_path]
                 event.media_types = ["audio/ogg"]
                 logger.info("[Telegram] Cached user voice at %s", cached_path)
@@ -3087,7 +3095,15 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 file_obj = await msg.audio.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
+                cached_path = cache_audio_from_bytes(
+                    bytes(audio_bytes),
+                    ext=".mp3",
+                    platform="telegram",
+                    chat_id=str(msg.chat.id),
+                    message_id=str(msg.message_id),
+                    file_id=getattr(msg.audio, "file_id", None),
+                    file_unique_id=getattr(msg.audio, "file_unique_id", None),
+                )
                 event.media_urls = [cached_path]
                 event.media_types = ["audio/mp3"]
                 logger.info("[Telegram] Cached user audio at %s", cached_path)

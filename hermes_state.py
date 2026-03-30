@@ -524,7 +524,12 @@ class SessionDB:
         user_id: str = None,
         parent_session_id: str = None,
     ) -> None:
-        """Shared INSERT OR IGNORE for session rows."""
+        """Shared INSERT OR IGNORE for session rows.
+
+        Session IDs are stable across gateway restarts for a given chat session, so
+        recreating an agent after a restart must be able to reattach to an
+        existing SQLite row without treating that as a fatal error.
+        """
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,

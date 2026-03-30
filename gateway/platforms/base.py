@@ -8,6 +8,7 @@ and implement the required methods.
 import asyncio
 import inspect
 import ipaddress
+import json
 import logging
 import os
 import random
@@ -639,6 +640,8 @@ def cleanup_image_cache(max_age_hours: int = 24) -> int:
 # ---------------------------------------------------------------------------
 
 AUDIO_CACHE_DIR = get_hermes_dir("cache/audio", "audio_cache")
+VOICE_CACHE_DIR = AUDIO_CACHE_DIR / "inbound"
+VOICE_CACHE_INDEX_PATH = VOICE_CACHE_DIR / "index.json"
 
 
 def get_audio_cache_dir() -> Path:
@@ -647,22 +650,159 @@ def get_audio_cache_dir() -> Path:
     return AUDIO_CACHE_DIR
 
 
-def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
-    """
-    Save raw audio bytes to the cache and return the absolute file path.
+def get_voice_cache_dir() -> Path:
+    """Return the inbound-voice cache directory, creating it if needed."""
+    VOICE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return VOICE_CACHE_DIR
 
-    Args:
-        data: Raw audio bytes.
-        ext:  File extension including the dot (e.g. ".ogg", ".mp3").
 
-    Returns:
-        Absolute path to the cached audio file as a string.
+def _voice_cache_limits() -> Tuple[int, int]:
+    """Return rolling voice cache limits: (max_files, max_bytes)."""
+    max_files = int(os.getenv("HERMES_VOICE_CACHE_MAX_FILES", "20"))
+    max_bytes = int(os.getenv("HERMES_VOICE_CACHE_MAX_BYTES", str(200 * 1024 * 1024)))
+    return max(max_files, 1), max(max_bytes, 1)
+
+
+def _load_voice_cache_index() -> Dict[str, Any]:
+    """Load voice-cache index JSON; return an empty index when absent/corrupt."""
+    index_path = VOICE_CACHE_INDEX_PATH
+    if not index_path.exists():
+        return {"version": 1, "entries": []}
+
+    try:
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+        entries = data.get("entries")
+        if not isinstance(entries, list):
+            entries = []
+        return {"version": 1, "entries": entries}
+    except Exception:
+        logger.debug("Voice cache index unreadable; rebuilding: %s", index_path)
+        return {"version": 1, "entries": []}
+
+
+def _save_voice_cache_index(index: Dict[str, Any]) -> None:
+    """Persist voice-cache index JSON atomically."""
+    index_path = VOICE_CACHE_INDEX_PATH
+    get_voice_cache_dir()
+    tmp_path = index_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(index_path)
+
+
+def _prune_voice_cache(index: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply rolling cache limits and remove stale/missing entries/files."""
+    entries = index.get("entries", [])
+    kept = []
+
+    # Keep only entries with existing files and valid sizes.
+    for entry in entries:
+        path = Path(str(entry.get("path", "")))
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            size = int(path.stat().st_size)
+        except Exception:
+            continue
+        if size < 0:
+            continue
+        entry["size_bytes"] = size
+        kept.append(entry)
+
+    # Oldest first for eviction.
+    kept.sort(key=lambda e: str(e.get("created_at", "")))
+
+    max_files, max_bytes = _voice_cache_limits()
+    total_bytes = sum(int(e.get("size_bytes", 0)) for e in kept)
+
+    while len(kept) > max_files or total_bytes > max_bytes:
+        victim = kept.pop(0)
+        victim_path = Path(str(victim.get("path", "")))
+        victim_size = int(victim.get("size_bytes", 0))
+        try:
+            if victim_path.exists():
+                victim_path.unlink()
+        except OSError:
+            pass
+        total_bytes = max(0, total_bytes - victim_size)
+
+    return {"version": 1, "entries": kept}
+
+
+def cache_audio_from_bytes(
+    data: bytes,
+    ext: str = ".ogg",
+    *,
+    message_id: Optional[str] = None,
+    platform: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    file_id: Optional[str] = None,
+    file_unique_id: Optional[str] = None,
+) -> str:
     """
-    cache_dir = get_audio_cache_dir()
-    filename = f"audio_{uuid.uuid4().hex[:12]}{ext}"
+    Save inbound audio bytes to rolling local cache and return file path.
+
+    The cache is indexed by message metadata and automatically pruned by file
+    count and total bytes (env overrides: HERMES_VOICE_CACHE_MAX_FILES,
+    HERMES_VOICE_CACHE_MAX_BYTES).
+    """
+    cache_dir = get_voice_cache_dir()
+    norm_ext = ext if ext.startswith(".") else f".{ext}"
+
+    prefix_parts = ["audio"]
+    if platform:
+        prefix_parts.append(re.sub(r"[^a-zA-Z0-9_-]+", "-", str(platform)))
+    if message_id:
+        prefix_parts.append(re.sub(r"[^a-zA-Z0-9_-]+", "-", str(message_id)))
+    prefix = "_".join(prefix_parts)
+    filename = f"{prefix}_{uuid.uuid4().hex[:8]}{norm_ext}"
     filepath = cache_dir / filename
     filepath.write_bytes(data)
+
+    entry = {
+        "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "path": str(filepath),
+        "size_bytes": int(filepath.stat().st_size),
+        "ext": norm_ext,
+        "platform": platform,
+        "chat_id": str(chat_id) if chat_id is not None else None,
+        "message_id": str(message_id) if message_id is not None else None,
+        "file_id": file_id,
+        "file_unique_id": file_unique_id,
+    }
+
+    index = _load_voice_cache_index()
+    index.setdefault("entries", []).append(entry)
+    pruned = _prune_voice_cache(index)
+    _save_voice_cache_index(pruned)
+
     return str(filepath)
+
+
+def find_cached_audio_by_message_id(
+    message_id: str,
+    *,
+    platform: Optional[str] = None,
+    chat_id: Optional[str] = None,
+) -> Optional[str]:
+    """Return latest cached audio path for a message ID, if still available."""
+    if not message_id:
+        return None
+
+    index = _load_voice_cache_index()
+    entries = index.get("entries", [])
+
+    for entry in reversed(entries):
+        if str(entry.get("message_id") or "") != str(message_id):
+            continue
+        if platform and str(entry.get("platform") or "") != str(platform):
+            continue
+        if chat_id is not None and str(entry.get("chat_id") or "") != str(chat_id):
+            continue
+        path = str(entry.get("path") or "")
+        if path and Path(path).exists():
+            return path
+
+    return None
 
 
 async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) -> str:
