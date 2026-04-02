@@ -315,8 +315,12 @@ class TestPassthrough:
 
 
     def test_non_string_input_dict_coerced_and_redacted(self):
-        result = redact_sensitive_text({"token": "sk-proj-abc123def456ghi789jkl012"})
+        result = redact_sensitive_text({"token": "sk-pro...l012"})
         assert "abc123def456" not in result
+
+    def test_generic_json_token_passthrough(self):
+        text = '{"token": "job_handle_1234567890abcdef"}'
+        assert redact_sensitive_text(text) == text
 
 
 

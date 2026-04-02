@@ -315,8 +315,11 @@ def _key_has_secret_keyword(key: str) -> bool:
             return True
     return False
 
-# JSON field patterns: "apiKey": "value", "token": "value", etc.
-_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
+# JSON field patterns for credential-bearing fields.
+# Intentionally exclude a bare `token` key: many APIs return non-secret job/session
+# tokens that the agent must read and reuse (for example async polling handles).
+# Sensitive auth-bearing fields remain covered explicitly below.
+_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
 _JSON_FIELD_RE = re.compile(
     rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"',
     re.IGNORECASE,
