@@ -168,9 +168,15 @@ class TestPassthrough:
     def test_non_string_input_int_coerced(self):
         assert redact_sensitive_text(12345) == "12345"
 
-    def test_non_string_input_dict_coerced_and_redacted(self):
-        result = redact_sensitive_text({"token": "sk-proj-abc123def456ghi789jkl012"})
+    def test_json_access_token_redacted(self):
+        text = '{"access_token": "abc123def456"}'
+        result = redact_sensitive_text(text)
         assert "abc123def456" not in result
+
+    def test_generic_json_token_passthrough(self):
+        text = '{"token": "job_handle_1234567890abcdef"}'
+        result = redact_sensitive_text(text)
+        assert result == text
 
     def test_normal_text_unchanged(self):
         text = "Hello world, this is a normal log message with no secrets."

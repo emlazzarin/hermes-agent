@@ -206,6 +206,7 @@ def test_aiagent_recreates_session_db_row_idempotently_on_first_use():
     ):
         agent = AIAgent(
             api_key="***",
+            base_url="https://openrouter.ai/api/v1",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
