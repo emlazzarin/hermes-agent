@@ -981,6 +981,9 @@ def cleanup_image_cache(max_age_hours: int = 24) -> int:
 # ---------------------------------------------------------------------------
 
 AUDIO_CACHE_DIR = get_hermes_dir("cache/audio", "audio_cache")
+VOICE_CACHE_MAX_FILES = 20
+VOICE_CACHE_MAX_BYTES = 200 * 1024 * 1024
+_voice_cache_lock = threading.Lock()
 
 
 def get_audio_cache_dir() -> Path:
@@ -988,6 +991,63 @@ def get_audio_cache_dir() -> Path:
     d = _resolve_cache_dir("AUDIO_CACHE_DIR", "cache/audio", "audio_cache")
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def get_voice_cache_dir() -> Path:
+    """Return the indexed inbound-voice cache directory."""
+    d = get_audio_cache_dir() / "inbound"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _voice_cache_index_path() -> Path:
+    return get_voice_cache_dir() / "index.json"
+
+
+def _load_voice_cache_index() -> Dict[str, Any]:
+    import json
+
+    path = _voice_cache_index_path()
+    if not path.exists():
+        return {"version": 1, "entries": []}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        entries = value.get("entries") if isinstance(value, dict) else None
+        return {"version": 1, "entries": entries if isinstance(entries, list) else []}
+    except Exception:
+        logger.debug("Inbound voice cache index is unreadable; rebuilding", exc_info=True)
+        return {"version": 1, "entries": []}
+
+
+def _save_voice_cache_index(index: Dict[str, Any]) -> None:
+    import json
+
+    path = _voice_cache_index_path()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _prune_voice_cache(index: Dict[str, Any]) -> Dict[str, Any]:
+    entries = []
+    for raw in index.get("entries", []):
+        if not isinstance(raw, dict):
+            continue
+        path = Path(str(raw.get("path") or ""))
+        if not path.is_file():
+            continue
+        raw["size_bytes"] = path.stat().st_size
+        entries.append(raw)
+    entries.sort(key=lambda item: str(item.get("created_at") or ""))
+    total = sum(int(item.get("size_bytes") or 0) for item in entries)
+    while len(entries) > VOICE_CACHE_MAX_FILES or total > VOICE_CACHE_MAX_BYTES:
+        victim = entries.pop(0)
+        total -= int(victim.get("size_bytes") or 0)
+        try:
+            Path(str(victim["path"])).unlink(missing_ok=True)
+        except OSError:
+            logger.debug("Failed to evict inbound voice cache file", exc_info=True)
+    return {"version": 1, "entries": entries}
 
 
 def _sniff_audio_ext(data: bytes, fallback_ext: str) -> str:
@@ -1002,24 +1062,64 @@ def _sniff_audio_ext(data: bytes, fallback_ext: str) -> str:
     return sniff_audio_ext(data, fallback_ext)
 
 
-def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
-    """
-    Save raw audio bytes to the cache and return the absolute file path.
-
-    Args:
-        data: Raw audio bytes.
-        ext:  File extension including the dot (e.g. ".ogg", ".mp3").
-
-    Returns:
-        Absolute path to the cached audio file as a string.
-    """
+def cache_audio_from_bytes(
+    data: bytes,
+    ext: str = ".ogg",
+    *,
+    message_id: Optional[str] = None,
+    platform: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    file_id: Optional[str] = None,
+    file_unique_id: Optional[str] = None,
+) -> str:
+    """Save inbound audio into a bounded, message-indexed local cache."""
     validate_inbound_media_size(len(data), media_type="audio")
-    cache_dir = get_audio_cache_dir()
+    cache_dir = get_voice_cache_dir()
     sniffed_ext = _sniff_audio_ext(data, ext)
-    filename = f"audio_{uuid.uuid4().hex[:12]}{sniffed_ext}"
+    safe_platform = re.sub(r"[^A-Za-z0-9_-]+", "-", str(platform or "audio"))
+    safe_message = re.sub(r"[^A-Za-z0-9_-]+", "-", str(message_id or "unknown"))
+    filename = f"{safe_platform}_{safe_message}_{uuid.uuid4().hex[:8]}{sniffed_ext}"
     filepath = cache_dir / filename
     filepath.write_bytes(data)
+
+    entry = {
+        "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "path": str(filepath),
+        "size_bytes": filepath.stat().st_size,
+        "ext": sniffed_ext,
+        "platform": platform,
+        "chat_id": str(chat_id) if chat_id is not None else None,
+        "message_id": str(message_id) if message_id is not None else None,
+        "file_id": file_id,
+        "file_unique_id": file_unique_id,
+    }
+    with _voice_cache_lock:
+        index = _load_voice_cache_index()
+        index["entries"].append(entry)
+        _save_voice_cache_index(_prune_voice_cache(index))
     return str(filepath)
+
+
+def find_cached_audio_by_message_id(
+    message_id: str,
+    *,
+    platform: Optional[str] = None,
+    chat_id: Optional[str] = None,
+) -> Optional[str]:
+    """Return the newest cached audio path matching message metadata."""
+    with _voice_cache_lock:
+        entries = _load_voice_cache_index().get("entries", [])
+    for entry in reversed(entries):
+        if str(entry.get("message_id")) != str(message_id):
+            continue
+        if platform is not None and str(entry.get("platform")) != str(platform):
+            continue
+        if chat_id is not None and str(entry.get("chat_id")) != str(chat_id):
+            continue
+        path = Path(str(entry.get("path") or ""))
+        if path.is_file():
+            return str(path)
+    return None
 
 
 async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) -> str:

@@ -4,6 +4,7 @@ Tests for audio cache utilities in gateway/platforms/base.py.
 Covers: get_audio_cache_dir, cache_audio_from_bytes, cleanup_audio_cache.
 """
 
+import json
 import os
 import time
 from pathlib import Path
@@ -13,7 +14,9 @@ import pytest
 from gateway.platforms.base import (
     cache_audio_from_bytes,
     cleanup_audio_cache,
+    find_cached_audio_by_message_id,
     get_audio_cache_dir,
+    get_voice_cache_dir,
 )
 
 # ---------------------------------------------------------------------------
@@ -53,6 +56,30 @@ class TestCacheAudioFromBytes:
     def test_default_extension(self):
         path = cache_audio_from_bytes(b"data")
         assert path.endswith(".ogg")
+
+    def test_indexes_message_metadata(self):
+        path = cache_audio_from_bytes(
+            b"voice",
+            message_id="42",
+            platform="telegram",
+            chat_id="7",
+            file_id="file-id",
+            file_unique_id="unique-id",
+        )
+        assert find_cached_audio_by_message_id(
+            "42", platform="telegram", chat_id="7"
+        ) == path
+        index = json.loads((get_voice_cache_dir() / "index.json").read_text())
+        assert index["entries"][-1]["file_unique_id"] == "unique-id"
+
+    def test_evicts_oldest_entry_at_count_limit(self, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.base.VOICE_CACHE_MAX_FILES", 2)
+        first = cache_audio_from_bytes(b"one", message_id="1")
+        cache_audio_from_bytes(b"two", message_id="2")
+        cache_audio_from_bytes(b"three", message_id="3")
+        assert not Path(first).exists()
+        assert find_cached_audio_by_message_id("1") is None
+        assert find_cached_audio_by_message_id("3") is not None
 
 
 # ---------------------------------------------------------------------------
