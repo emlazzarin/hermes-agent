@@ -1225,12 +1225,12 @@ platform_toolsets:
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
-# Providers: local (free, faster-whisper) | groq (free tier) | openai (Whisper API) | mistral (Voxtral Transcribe)
-# Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
+# Providers: local | groq | openai | mistral | xai | elevenlabs | deepinfra | aqua
+# Set the corresponding provider API key in .env (Aqua uses AQUA_API_KEY).
 stt:
   enabled: true
   # provider: "local"          # auto-detected if omitted
-  # --- Cloud pre-upload silence trim (groq/openai/mistral/xai/elevenlabs/deepinfra) ---
+  # --- Cloud pre-upload silence trim (groq/openai/mistral/xai/elevenlabs/deepinfra/aqua) ---
   # Local whisper gets Silero VAD; cloud endpoints otherwise receive raw audio —
   # silence inflates upload time, per-audio-minute billing, and hallucination risk.
   # Collapses pauses with ffmpeg client-side; clips under 12s skip the trim, and
@@ -1286,6 +1286,9 @@ stt:
   #   # by the `stt` surface tag — leave `model` blank to take the first
   #   # live result. Pin only when you need a specific Whisper variant.
   #   model: ""
+  # aqua:
+  #   model: "avalon-v1.5"
+  #   language: ""             # blank = stt.language > auto-detect
 
 # Text-to-speech. Only the deepinfra block is documented here — the
 # remaining providers (edge, openai, xai, minimax, mistral, gemini,

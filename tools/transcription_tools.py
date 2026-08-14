@@ -2,7 +2,7 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription with built-in local and cloud providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
@@ -12,6 +12,7 @@ Provides speech-to-text transcription with six providers:
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
   - **elevenlabs** — ElevenLabs Scribe API, requires ``ELEVENLABS_API_KEY``.
+  - **aqua** — Aqua Voice Avalon API, requires ``AQUA_API_KEY``.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -113,6 +114,7 @@ DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
+DEFAULT_AQUA_STT_MODEL = os.getenv("STT_AQUA_MODEL", "avalon-v1.5")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -121,6 +123,7 @@ GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
+AQUA_STT_BASE_URL = os.getenv("AQUA_STT_BASE_URL", "https://api.aquavoice.com/api/v1")
 # DeepInfra STT base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".oga", ".opus", ".aac", ".flac", ".caf"}
@@ -385,6 +388,7 @@ BUILTIN_STT_PROVIDERS = frozenset({
     "xai",
     "elevenlabs",
     "deepinfra",
+    "aqua",
 })
 
 
@@ -1105,6 +1109,12 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "aqua":
+            if _resolve_provider_key("AQUA_API_KEY", "aqua"):
+                return "aqua"
+            logger.warning("STT provider 'aqua' configured but AQUA_API_KEY not set")
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
     # --- Auto-detect (no explicit provider):
@@ -1148,6 +1158,9 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and _resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"):
         logger.info("No local STT available, using DeepInfra Whisper API")
         return "deepinfra"
+    if _resolve_provider_key("AQUA_API_KEY", "aqua"):
+        logger.info("No local STT available, using Aqua Voice Avalon API")
+        return "aqua"
     return "none"
 
 
@@ -2669,6 +2682,94 @@ def _transcribe_elevenlabs(
 
 
 # ---------------------------------------------------------------------------
+# Provider: Aqua Voice (Avalon API)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_aqua(
+    file_path: str,
+    model_name: str,
+    *,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Transcribe using Aqua Voice's OpenAI-compatible Avalon endpoint."""
+    if prompt:
+        logger.debug(
+            "STT provider 'aqua' does not support transcription prompts — "
+            "proceeding without the prompt."
+        )
+
+    api_key = _resolve_provider_key("AQUA_API_KEY", "aqua")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "AQUA_API_KEY not set"}
+
+    stt_config = _load_stt_config()
+    aqua_config = stt_config.get("aqua") or {}
+    base_url = str(
+        aqua_config.get("base_url")
+        or get_env_value("AQUA_STT_BASE_URL")
+        or AQUA_STT_BASE_URL
+    ).strip().rstrip("/")
+    language = language or _resolve_stt_language("aqua", stt_config)
+
+    try:
+        import requests
+
+        data: Dict[str, str] = {"model": model_name}
+        if language:
+            data["language"] = language
+
+        with open(file_path, "rb") as audio_file:
+            response = requests.post(
+                f"{base_url}/audio/transcriptions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"file": (Path(file_path).name, audio_file)},
+                data=data,
+                timeout=300,
+            )
+
+        if response.status_code != 200:
+            try:
+                err_body = response.json()
+                detail = str(
+                    err_body.get("error")
+                    or err_body.get("detail")
+                    or response.text[:300]
+                )
+            except Exception:
+                detail = response.text[:300]
+            return {
+                "success": False,
+                "transcript": "",
+                "error": f"Aqua STT API error (HTTP {response.status_code}): {detail}",
+            }
+
+        transcript_text = _extract_transcript_text(response.json())
+        if not transcript_text:
+            return {
+                "success": False,
+                "transcript": "",
+                "error": "Aqua STT returned empty transcript",
+                "no_speech": True,
+            }
+
+        logger.info(
+            "Transcribed %s via Aqua Voice (%s, %d chars)",
+            Path(file_path).name,
+            model_name,
+            len(transcript_text),
+        )
+        return {"success": True, "transcript": transcript_text, "provider": "aqua"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("Aqua STT transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Aqua STT transcription failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Provider: DeepInfra (OpenAI-compatible /v1/audio/transcriptions)
 # ---------------------------------------------------------------------------
 
@@ -3078,6 +3179,13 @@ def _dispatch_stt_provider(
         di_config = di_config if isinstance(di_config, dict) else {}
         model_name = model or di_config.get("model") or ""
         return _transcribe_deepinfra(
+            file_path, model_name, language=language, prompt=prompt,
+        )
+
+    if provider == "aqua":
+        aqua_cfg = stt_config.get("aqua") or {}
+        model_name = model or aqua_cfg.get("model", DEFAULT_AQUA_STT_MODEL)
+        return _transcribe_aqua(
             file_path, model_name, language=language, prompt=prompt,
         )
 

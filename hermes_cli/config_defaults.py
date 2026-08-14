@@ -1586,7 +1586,7 @@ DEFAULT_CONFIG = {
         # the raw transcript is also echoed back to the user as a 🎙️ message.
         # Set false to keep STT for the agent while suppressing that user-facing echo.
         "echo_transcripts": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra" | "aqua"
         # Global language hint applied to EVERY provider unless a per-provider
         # language overrides it. Defaults to "en" — Whisper auto-detection
         # frequently misidentifies short/accented clips, which reads as
@@ -1594,7 +1594,7 @@ DEFAULT_CONFIG = {
         # auto-detect, or to your language code ("es", "zh", "uk", ...).
         "language": "en",
         # Pre-upload silence trim for cloud providers (groq/openai/mistral/
-        # xai/elevenlabs/deepinfra). Local whisper gets Silero VAD; cloud
+        # xai/elevenlabs/deepinfra/aqua). Local whisper gets Silero VAD; cloud
         # endpoints otherwise receive raw audio — silence inflates upload
         # time, per-audio-minute billing, and hallucination risk. Collapses
         # pauses with ffmpeg client-side; any failure uploads the original.
@@ -1637,6 +1637,10 @@ DEFAULT_CONFIG = {
         "deepinfra": {
             "model": "",  # empty = first stt-tagged model from the live catalog
             # "base_url": "",  # override DEEPINFRA_BASE_URL for STT only
+        },
+        "aqua": {
+            "model": "avalon-v1.5",
+            "language": "",
         },
     },
 
