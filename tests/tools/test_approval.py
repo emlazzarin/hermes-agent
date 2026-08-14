@@ -1568,3 +1568,20 @@ class TestCliApprovalTimeoutClassifiedSeparately:
         assert result.get("user_consent") is False
         assert "timed out without user response" in result["message"]
         assert "Silence is not consent" in result["message"]
+
+
+def test_benign_python_time_check_does_not_require_approval():
+    command = (
+        'python3 -c "from datetime import datetime; '
+        'from zoneinfo import ZoneInfo; '
+        'print(datetime.now(ZoneInfo(\'America/Los_Angeles\')).isoformat())"'
+    )
+    assert detect_dangerous_command(command) == (False, None, None)
+
+
+def test_python_time_check_rejects_side_effects():
+    command = (
+        'python3 -c "from datetime import datetime; '
+        'open(\'/tmp/unsafe\', \'w\').write(str(datetime.now()))"'
+    )
+    assert detect_dangerous_command(command)[0] is True

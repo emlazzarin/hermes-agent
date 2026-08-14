@@ -8,6 +8,7 @@ This module is the single source of truth for the dangerous command system:
 - Permanent allowlist persistence (config.yaml)
 """
 
+import ast
 import contextlib
 import contextvars
 import fnmatch
@@ -2260,6 +2261,62 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
 
 
+def _is_benign_python_time_check(command: str) -> bool:
+    """Recognize a narrow, read-only ``python -c`` date/time query."""
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError:
+        return False
+    if not argv or not re.fullmatch(
+        r"python(?:[23](?:\.\d+)*)?", os.path.basename(argv[0]).lower()
+    ):
+        return False
+    try:
+        flag_index = argv.index("-c")
+        script = argv[flag_index + 1]
+    except (ValueError, IndexError):
+        return False
+    try:
+        tree = ast.parse(script, mode="exec")
+    except SyntaxError:
+        return False
+
+    allowed_modules = {"datetime", "zoneinfo"}
+    allowed_calls = {
+        "print", "str", "int", "float", "bool", "datetime", "date",
+        "time", "timedelta", "timezone", "ZoneInfo",
+    }
+    allowed_attrs = {
+        "now", "utcnow", "astimezone", "isoformat", "strftime",
+        "fromtimestamp",
+    }
+    forbidden_nodes = (
+        ast.Await, ast.ClassDef, ast.Delete, ast.For, ast.FunctionDef,
+        ast.AsyncFunctionDef, ast.Global, ast.Lambda, ast.Nonlocal, ast.Raise,
+        ast.Try, ast.While, ast.With, ast.AsyncWith, ast.Yield, ast.YieldFrom,
+    )
+    for node in ast.walk(tree):
+        if isinstance(node, forbidden_nodes):
+            return False
+        if isinstance(node, ast.Import):
+            if any(alias.name.split(".", 1)[0] not in allowed_modules for alias in node.names):
+                return False
+        elif isinstance(node, ast.ImportFrom):
+            if node.level or (node.module or "").split(".", 1)[0] not in allowed_modules:
+                return False
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                if node.func.id not in allowed_calls:
+                    return False
+            elif isinstance(node.func, ast.Attribute):
+                if node.func.attr not in allowed_attrs:
+                    return False
+            else:
+                return False
+    lowered = script.lower()
+    return "print(" in lowered and any(name in lowered for name in allowed_modules)
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
@@ -2269,6 +2326,8 @@ def detect_dangerous_command(command: str) -> tuple:
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
+        return (False, None, None)
+    if _is_benign_python_time_check(command):
         return (False, None, None)
 
     for command_variant in _command_detection_variants(command):
