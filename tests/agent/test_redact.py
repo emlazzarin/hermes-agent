@@ -322,6 +322,11 @@ class TestPassthrough:
         text = '{"token": "job_handle_1234567890abcdef"}'
         assert redact_sensitive_text(text) == text
 
+    def test_json_access_token_stays_redacted(self):
+        secret = "opaque_auth_credential_1234567890"
+        result = redact_sensitive_text(f'{{"access_token": "{secret}"}}')
+        assert secret not in result
+
 
 
 

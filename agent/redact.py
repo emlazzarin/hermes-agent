@@ -46,13 +46,14 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
 })
 
 # Sensitive form-urlencoded / JSON body key names (case-insensitive exact match).
-# Exact match, NOT substring — "token_count" and "session_id" must NOT match.
-# Ported from nearai/ironclaw#2529.
+# Exact match, NOT substring. A bare ``token`` is deliberately excluded: many
+# APIs use it for non-secret async job/session handles. Authentication-bearing
+# variants remain sensitive, and URL query ``token`` values stay protected by
+# _SENSITIVE_QUERY_PARAMS.
 _SENSITIVE_BODY_KEYS = frozenset({
     "access_token",
     "refresh_token",
     "id_token",
-    "token",
     "api_key",
     "apikey",
     "client_secret",
